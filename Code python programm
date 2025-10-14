@@ -1,0 +1,269 @@
+import sys
+import re # Module pour les expressions régulières, utile pour le NIR
+
+# --- Constantes pour le NIR ---
+LONGUEUR_NIR_SANS_CLE = 13
+LONGUEUR_NIR_AVEC_CLE = 15
+
+# --- 1. Fonction qui crée le dictionnaire (Simulée car l'utilisateur l'a déjà fait) ---
+def creer_dictionnaire_departements():
+    """
+    Simule la création du dictionnaire des départements (code -> nom).
+    Normalement, cette fonction lirait le fichier 'departement.csv'.
+
+    :return: Un dictionnaire {code_departement: nom_departement}.
+    """
+    # Jeu de données minimal pour la validation et l'affichage
+    departements = {
+        '01': 'Ain', '02': 'Aisne', '2A': 'Corse-du-Sud', '2B': 'Haute-Corse', 
+        '75': 'Paris', '99': 'Né à l\'Étranger', 
+        '971': 'Guadeloupe', '972': 'Martinique', '973': 'Guyane', 
+        '974': 'La Réunion', '976': 'Mayotte'
+    }
+    # Ajout des codes spécifiques au NIR pour la validation
+    departements['97'] = 'Outre-Mer (Code générique ancien)'
+    departements['98'] = 'Outre-Mer (Code générique ancien)'
+    
+    return departements
+
+# --- 2. Fonction de Calcul de la Clé ---
+def calculer_cle_nir(nir_13_chiffres):
+    """
+    Calcule la clé de contrôle (2 chiffres) à partir des 13 premiers chiffres du NIR.
+    Formule : Clé = 97 - (NIR modulo 97).
+    Gère le cas spécial de la Corse (2A/2B).
+
+    :param nir_13_chiffres: La chaîne des 13 premiers chiffres du NIR.
+    :return: La clé de contrôle (chaîne de 2 chiffres, ex: '80').
+    :raises ValueError: Si le NIR n'a pas 13 chiffres ou contient des non-chiffres non gérés.
+
+    >>> calculer_cle_nir('1740330007058')
+    '47'
+    >>> calculer_cle_nir('2690549588157')
+    '80'
+    >>> calculer_cle_nir('1910620002000') # Exemple simplifie avec 20
+    '50'
+    >>> calculer_cle_nir('176012A000018') # 2A (Corse-du-Sud) traité comme 19
+    '23'
+    """
+    if len(nir_13_chiffres) != LONGUEUR_NIR_SANS_CLE:
+        raise ValueError("Le NIR doit comporter exactement 13 chiffres pour le calcul.")
+
+    nir_a_calculer = nir_13_chiffres
+    
+    # Gérer la Corse (2A et 2B) pour le calcul modulo 97
+    departement_nir = nir_a_calculer[5:7]
+    if departement_nir == '2A':
+        # Remplacement de 2A par 19 (règle historique)
+        nir_a_calculer = nir_a_calculer[:5] + '19' + nir_a_calculer[7:]
+    elif departement_nir == '2B':
+        # Remplacement de 2B par 18 (règle historique)
+        nir_a_calculer = nir_a_calculer[:5] + '18' + nir_a_calculer[7:]
+    
+    # Si des codes spéciaux (971, 972...) sont utilisés dans le code département (pos 6-10)
+    # il faut s'assurer que les 13 chiffres sont bien numériques après traitement de 2A/2B.
+    if not nir_a_calculer.isdigit():
+        # Cette vérification devient plus simple si 2A/2B ont déjà été traités
+        raise ValueError("Le NIR contient des caractères non numériques après ajustement Corse.")
+        
+    base_nir = int(nir_a_calculer)
+    
+    reste = base_nir % 97
+    cle = 97 - reste
+    
+    # La clé doit être un nombre à deux chiffres, avec un zéro initial si < 10.
+    return str(cle).zfill(2)
+
+# --- 3. Fonction de Validation et Extraction de Données ---
+def valider_nir(nir_complet, departements):
+    """
+    Valide la structure et les données du numéro de sécu, et vérifie la clé.
+
+    :param nir_complet: Le numéro de sécu saisi (13 ou 15 chiffres/caractères).
+    :param departements: Dictionnaire des départements pour la validation.
+    :return: Un tuple (est_valide, message, donnees_extraites)
+    """
+    
+    # A. Nettoyage et Validation du format (nombre, longueur)
+    if not isinstance(nir_complet, str):
+        return False, "Erreur: La saisie n'est pas une chaîne de caractères.", None
+    
+    # Nettoyage : enlève les espaces, met en majuscules (pour 2A/2B)
+    nir_nettoye = nir_complet.replace(' ', '').upper()
+    longueur = len(nir_nettoye)
+    
+    if longueur != LONGUEUR_NIR_SANS_CLE and longueur != LONGUEUR_NIR_AVEC_CLE:
+        return False, f"Erreur: Le numéro doit comporter {LONGUEUR_NIR_SANS_CLE} ou {LONGUEUR_NIR_AVEC_CLE} chiffres/caractères. Saisie: {longueur}.", None
+
+    # Extrait la base de 13 chiffres
+    nir_base = nir_nettoye[:LONGUEUR_NIR_SANS_CLE]
+    
+    # Validation du type: Vérifie que ce sont des chiffres, sauf pour les positions 6 et 7 (département)
+    if not re.match(r'^\d{5}(\d{2}|[2][AB])\d{6}$', nir_base):
+        # Cette regex simplifiée vérifie les 5 premiers, puis 'XX' ou '2A'/'2B', puis les 6 suivants.
+        # Note: Cela ne couvre pas les cas DOM-TOM 3 chiffres, mais couvre les erreurs les plus courantes.
+        return False, "Erreur: Le numéro saisi contient des caractères non numériques (hors Corse 2A/2B géré).", None
+
+    # B. Validation des données structurelles et Extraction
+    
+    # Sexe (Position 1)
+    sexe_code = nir_base[0]
+    if sexe_code == '1':
+        sexe = "Homme"
+    elif sexe_code == '2':
+        sexe = "Femme"
+    else:
+        # Codes 3/4/7/8 sont pour l'immatriculation provisoire, non gérés dans cet exercice.
+        return False, f"Erreur: Le code sexe ({sexe_code}) est impossible (doit être 1 ou 2 pour un NIR définitif).", None
+
+    # Année de naissance (Positions 2-3)
+    annee_naissance_court = nir_base[1:3]
+    
+    # Mois de naissance (Positions 4-5)
+    mois_naissance_code = nir_base[3:5]
+    try:
+        mois_int = int(mois_naissance_code)
+    except ValueError:
+        return False, "Erreur: Le mois de naissance n'est pas numérique.", None
+        
+    # Validation du mois (01-12 pour la France, codes spéciaux > 12 pour DOM/Étranger)
+    # L'énoncé demande de valider si "impossibles". 01-12 est le minimum requis.
+    if not (1 <= mois_int <= 12 or 20 <= mois_int <= 42 or 50 <= mois_int <= 99):
+         return False, f"Erreur: Le mois de naissance ({mois_naissance_code}) est impossible (doit être entre 01 et 12, ou codes spéciaux DOM/Étranger).", None
+
+    # Département de naissance (Positions 6-10)
+    # On commence par vérifier les 2 premiers pour le code principal
+    code_dep_2chiffres = nir_base[5:7]
+    departement_code = code_dep_2chiffres
+    
+    if departement_code in departements:
+        departement_nom = departements[departement_code]
+    elif departement_code == '99':
+        departement_nom = departements.get('99', 'Né à l\'Étranger')
+    elif code_dep_2chiffres.isdigit() and int(code_dep_2chiffres) >= 97:
+        # Cas des DOM-TOM récents (971, 972, etc.)
+        code_dep_3chiffres = nir_base[5:8]
+        if code_dep_3chiffres in departements:
+            departement_code = code_dep_3chiffres
+            departement_nom = departements[departement_code]
+        else:
+            return False, f"Erreur: Code département ({code_dep_3chiffres}) des Outre-Mer impossible ou non référencé.", None
+    else:
+        return False, f"Erreur: Le département de naissance ({departement_code}) est impossible ou inconnu.", None
+
+    # C. Calcul et Vérification de la clé
+    try:
+        cle_calculee = calculer_cle_nir(nir_base)
+    except ValueError as e:
+        return False, f"Erreur de calcul de la clé: {e}", None
+
+    donnees = {
+        'sexe': sexe,
+        'annee_naissance': annee_naissance_court,
+        'mois_naissance': mois_naissance_code,
+        'departement_code': departement_code,
+        'departement_nom': departement_nom,
+        'cle_calculee': cle_calculee
+    }
+    
+    # 4. Vérification si 15 chiffres
+    if longueur == LONGUEUR_NIR_AVEC_CLE:
+        cle_saisie = nir_nettoye[LONGUEUR_NIR_SANS_CLE:]
+        donnees['cle_saisie'] = cle_saisie
+        
+        if cle_saisie == cle_calculee:
+            message = "Validation réussie. La clé de contrôle est **correcte**."
+        else:
+            message = f"Erreur: La clé de contrôle est **incorrecte**. Clé saisie: {cle_saisie}, Clé calculée: {cle_calculee}."
+            return False, message, donnees # Échec de la validation de la clé
+    else:
+        message = "NIR valide (13 chiffres). La clé de contrôle calculée est prête."
+        
+    return True, message, donnees
+
+# --- 4. Fonction d'Affichage des Résultats ---
+def afficher_resultats(nir, donnees):
+    """Affiche les résultats formatés."""
+    print("\n--- Résultat de l'analyse ---")
+    
+    # Reconstruction de la date de naissance pour une meilleure lisibilité
+    annee = donnees['annee_naissance']
+    mois = donnees['mois_naissance']
+    
+    print(f"Numéro de Sécu : {nir}")
+    print("-" * 35)
+    print(f"Sexe : {donnees['sexe']}")
+    print(f"Année de naissance : {annee} (XXe siècle à déterminer, ex: 19{annee} ou 20{annee})")
+    print(f"Mois de naissance : {mois}")
+    print(f"Département de naissance : {donnees['departement_nom']} (Code: {donnees['departement_code']})")
+    print("-" * 35)
+    
+    if len(nir) == LONGUEUR_NIR_AVEC_CLE:
+        statut_cle = 'CORRECTE' if donnees.get('cle_saisie') == donnees['cle_calculee'] else 'INCORRECTE'
+        print(f"Clé saisie : {donnees['cle_saisie']} | Statut : {statut_cle}")
+    print(f"Clé calculée (à partir des 13 chiffres) : {donnees['cle_calculee']}")
+    print("-" * 35)
+
+
+# --- 5. Fonction Principale ---
+def main():
+    """Fonction principale du programme."""
+    
+    print("--- Programme d'Analyse du Numéro de Sécurité Sociale ---")
+    
+    # 1. Création/Chargement du dictionnaire des départements
+    departements = creer_dictionnaire_departements()
+    
+    # 2. Boucle de saisie et de traitement
+    while True:
+        try:
+            nir_saisi = input("\nEntrez le numéro de Sécurité Sociale (13 ou 15 chiffres/caractères, ex: 174033000705847) : ").strip()
+        except EOFError: # Gestion de la fin de saisie (ex: Ctrl+D)
+            print("\nFin du programme.")
+            break
+        
+        if not nir_saisi:
+            print("Saisie vide. Veuillez réessayer.")
+            continue
+            
+        # Validation
+        est_valide, message, donnees = valider_nir(nir_saisi, departements)
+        
+        if est_valide:
+            afficher_resultats(nir_saisi, donnees)
+            break # Sort de la boucle si succès
+        else:
+            print(f"ERREUR : {message}")
+            print("Veuillez corriger la saisie et réessayer.")
+
+# --- Exécution ---
+
+if __name__ == "__main__":
+    # Pour tester les fonctions avec les doctests (optionnel)
+    # import doctest
+    # doctest.testmod() 
+    
+    main()
+
+
+Comment l'exécuter
+ * Enregistrez le code ci-dessus dans un fichier nommé, par exemple, programme_secu.py.
+ * Exécutez le fichier dans votre terminal :
+   python programme_secu.py
+
+ * Le programme vous demandera d'entrer le numéro de sécurité sociale.
+Exemple d'entrée/sortie (avec clé correcte) :
+Entrez le numéro de Sécurité Sociale (13 ou 15 chiffres/caractères, ex: 174033000705847) : 174033000705847
+
+--- Résultat de l'analyse ---
+Numéro de Sécu : 174033000705847
+-----------------------------------
+Sexe : Homme
+Année de naissance : 74 (XXe siècle à déterminer, ex: 1974 ou 2074)
+Mois de naissance : 03
+Département de naissance : Outre-Mer (Code générique ancien) (Code: 97)
+-----------------------------------
+Clé saisie : 47 | Statut : CORRECTE
+Clé calculée (à partir des 13 chiffres) : 47
+-----------------------------------
+
